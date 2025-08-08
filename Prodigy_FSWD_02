@@ -1,0 +1,31 @@
+from urllib.parse import parse_qs
+import json
+
+def parse(req):
+    try:
+        lines = req.split("\r\n")
+        method, path, _ = lines[0].split()
+        body = lines[-1]
+        return method, path, parse_qs(body)
+    except Exception as e:
+        print("Parse error:", e)
+        return None, None, {}
+
+def handle(conn):
+    try:
+        req = conn.recv(1024).decode()
+        method, path, data = parse(req)
+        response = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n"
+
+        if method == "POST" and path == "/login":
+            u, pw = data.get("username", [""])[0], data.get("password", [""])[0]
+            result = {"status": "success"} if users.get(u) == pw else {"status": "unauthorized"}
+            response += json.dumps(result)
+
+        # Other routes...
+
+        conn.send(response.encode())
+    except Exception as e:
+        conn.send(b"HTTP/1.1 500 Internal Server Error\r\n\r\n")
+    finally:
+        conn.close()
