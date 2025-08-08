@@ -1,0 +1,52 @@
+# Simple authentication system without in-built hashing libraries
+
+users = {}  # username: hashed_password
+sessions = {}  # username: session_status (True/False)
+
+# Custom "hash" function (simple, not secure for production)
+def custom_hash(password):
+    hashed = 0
+    for ch in password:
+        hashed = (hashed * 31 + ord(ch)) % 1000000007
+    return str(hashed)
+
+# Registration
+def register(username, password):
+    if username in users:
+        print("Username already exists.")
+        return
+    users[username] = custom_hash(password)
+    print("Registration successful.")
+
+# Login
+def login(username, password):
+    if username not in users:
+        print("No such user.")
+        return
+    if users[username] == custom_hash(password):
+        sessions[username] = True
+        print("Login successful.")
+    else:
+        print("Incorrect password.")
+
+# Access protected route
+def protected(username):
+    if sessions.get(username):
+        print(f"Welcome {username}, you have access to protected data!")
+    else:
+        print("Access denied. Please login first.")
+
+# Logout
+def logout(username):
+    if username in sessions:
+        sessions[username] = False
+        print("Logged out.")
+    else:
+        print("User not logged in.")
+
+# Example usage
+register("alice", "mypassword")
+login("alice", "mypassword")
+protected("alice")
+logout("alice")
+protected("alice")
