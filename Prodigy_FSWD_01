@@ -1,0 +1,136 @@
+from flask import Flask, request, session, redirect, url_for, render_template_string
+
+app = Flask(__name__)
+app.secret_key = "mysecret"  # In production, use a random, secure key
+
+# Simple in-memory "database"
+users = {}  # { username: { "password": hash, "role": "user"/"admin" } }
+
+# -----------------------------
+# Simple SHA256 implementation
+# -----------------------------
+def sha256(data):
+    # Manual SHA256 implementation using bitwise ops
+    import struct
+
+    def rightrotate(x, n):
+        return ((x >> n) | (x << (32 - n))) & 0xffffffff
+
+    # Constants (first 32 bits of fractional parts of cube roots of primes)
+    k = [
+        0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+        0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+        0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+        0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+        0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+        0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+        0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+        0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
+    ]
+
+    h = [
+        0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
+        0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19
+    ]
+
+    data = bytearray(data, 'utf-8')
+    orig_len_in_bits = (8 * len(data)) & 0xffffffffffffffff
+    data.append(0x80)
+    while (len(data) * 8) % 512 != 448:
+        data.append(0)
+    data += orig_len_in_bits.to_bytes(8, 'big')
+
+    for i in range(0, len(data), 64):
+        w = list(struct.unpack('>16L', data[i:i + 64]))
+        for j in range(16, 64):
+            s0 = rightrotate(w[j-15], 7) ^ rightrotate(w[j-15], 18) ^ (w[j-15] >> 3)
+            s1 = rightrotate(w[j-2], 17) ^ rightrotate(w[j-2], 19) ^ (w[j-2] >> 10)
+            w.append((w[j-16] + s0 + w[j-7] + s1) & 0xffffffff)
+
+        a, b, c, d, e, f, g, hh = h
+        for j in range(64):
+            S1 = rightrotate(e, 6) ^ rightrotate(e, 11) ^ rightrotate(e, 25)
+            ch = (e & f) ^ (~e & g)
+            temp1 = (hh + S1 + ch + k[j] + w[j]) & 0xffffffff
+            S0 = rightrotate(a, 2) ^ rightrotate(a, 13) ^ rightrotate(a, 22)
+            maj = (a & b) ^ (a & c) ^ (b & c)
+            temp2 = (S0 + maj) & 0xffffffff
+
+            hh = g
+            g = f
+            f = e
+            e = (d + temp1) & 0xffffffff
+            d = c
+            c = b
+            b = a
+            a = (temp1 + temp2) & 0xffffffff
+
+        h = [(x+y) & 0xffffffff for x, y in zip(h, [a, b, c, d, e, f, g, hh])]
+
+    return ''.join(f'{value:08x}' for value in h)
+
+# -----------------------------
+# Routes
+# -----------------------------
+HTML = """
+<h2>{{ title }}</h2>
+<form method="post">
+  Username: <input name="username"><br>
+  Password: <input type="password" name="password"><br>
+  {% if show_role %}
+  Role: <select name="role"><option>user</option><option>admin</option></select><br>
+  {% endif %}
+  <button type="submit">{{ button }}</button>
+</form>
+<a href="/">Home</a>
+"""
+
+@app.route('/')
+def home():
+    if 'user' in session:
+        return f"<h3>Welcome {session['user']} (Role: {users[session['user']]['role']})</h3>" \
+               "<a href='/private'>Private</a> | <a href='/admin'>Admin</a> | <a href='/logout'>Logout</a>"
+    return "<h3>Welcome Guest</h3><a href='/register'>Register</a> | <a href='/login'>Login</a>"
+
+@app.route('/register', methods=['GET', 'POST'])
+def register():
+    if request.method == 'POST':
+        u = request.form['username']
+        p = request.form['password']
+        role = request.form['role']
+        if u in users:
+            return "User exists!"
+        users[u] = {"password": sha256(p), "role": role}
+        return redirect(url_for('login'))
+    return render_template_string(HTML, title="Register", button="Register", show_role=True)
+
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    if request.method == 'POST':
+        u = request.form['username']
+        p = request.form['password']
+        if u in users and users[u]['password'] == sha256(p):
+            session['user'] = u
+            return redirect(url_for('home'))
+        return "Invalid credentials"
+    return render_template_string(HTML, title="Login", button="Login", show_role=False)
+
+@app.route('/logout')
+def logout():
+    session.pop('user', None)
+    return redirect(url_for('home'))
+
+@app.route('/private')
+def private():
+    if 'user' not in session:
+        return redirect(url_for('login'))
+    return f"Private content for {session['user']}"
+
+@app.route('/admin')
+def admin():
+    if 'user' not in session or users[session['user']]['role'] != 'admin':
+        return "Access denied"
+    return f"Admin content for {session['user']}"
+
+if __name__ == '__main__':
+    app.run(debug=True)
