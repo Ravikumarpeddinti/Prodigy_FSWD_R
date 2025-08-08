@@ -1,0 +1,29 @@
+def handle(conn):
+    try:
+        req = conn.recv(1024).decode()
+        line = req.split("\r\n")[0]
+        method, path, _ = line.split()
+        response = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n"
+
+        if path == "/":
+            response += product_html()
+        elif path.startswith("/add/"):
+            pid = path.split("/")[-1]
+            if pid in products:
+                cart.append(pid)
+                response += f"<p>Added to cart.</p><a href='/'>Back</a>"
+            else:
+                response += "<p>Invalid product.</p><a href='/'>Back</a>"
+        elif path == "/cart":
+            response += cart_html()
+        elif path == "/checkout":
+            cart.clear()
+            response += "<h2>Thank you! Order placed.</h2><a href='/'>Shop Again</a>"
+        else:
+            response += "<h3>404 Not Found</h3>"
+
+        conn.send(response.encode())
+    except Exception as e:
+        conn.send(b"HTTP/1.1 500 Internal Server Error\r\n\r\n<h3>Server Error</h3>")
+    finally:
+        conn.close()
