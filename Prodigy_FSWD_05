@@ -1,0 +1,73 @@
+# Manual list length function
+def get_length(lst):
+    count = 0
+    for _ in lst:
+        count += 1
+    return count
+
+# Manual append function
+def add_to_list(lst, item):
+    lst += [item]
+    return lst
+
+# Data storage
+users = []
+posts = []
+
+# Create a user profile
+def create_user(username):
+    user = {
+        'username': username,
+        'posts': [],
+        'followers': [],
+        'notifications': []
+    }
+    users = add_to_list(users, user)
+    return user
+
+# Create a post
+def create_post(user, content):
+    post = {
+        'author': user['username'],
+        'content': content,
+        'likes': [],
+        'comments': []
+    }
+    user['posts'] = add_to_list(user['posts'], post)
+    posts = add_to_list(posts, post)
+    return post
+
+# Like a post
+def like_post(post, username):
+    post['likes'] = add_to_list(post['likes'], username)
+
+# Comment on a post
+def comment_post(post, username, comment_text):
+    comment = {'user': username, 'text': comment_text}
+    post['comments'] = add_to_list(post['comments'], comment)
+
+# Follow a user
+def follow_user(follower, followee):
+    followee['followers'] = add_to_list(followee['followers'], follower['username'])
+    followee['notifications'] = add_to_list(followee['notifications'], f"{follower['username']} followed you!")
+
+# Display post details
+def display_post(post):
+    print("Author:", post['author'])
+    print("Content:", post['content'])
+    print("Likes:", get_length(post['likes']))
+    print("Comments:")
+    for comment in post['comments']:
+        print(f"  {comment['user']}: {comment['text']}")
+
+# Example usage
+user1 = create_user("Ravi")
+user2 = create_user("Anjali")
+
+post1 = create_post(user1, "Hello world! My first post.")
+like_post(post1, user2['username'])
+comment_post(post1, user2['username'], "Nice post!")
+
+follow_user(user2, user1)
+
+display_post(post1)
