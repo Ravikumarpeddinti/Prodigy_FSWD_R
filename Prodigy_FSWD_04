@@ -1,0 +1,479 @@
+# ws_chat.py
+# Single-file WebSocket chat server + simple auth without external libs.
+# Author: demo for educational purposes.
+
+import socket
+import threading
+import traceback
+import json
+import time
+
+# -------------------------
+# Manual SHA-256 (for passwords)
+# -------------------------
+def sha256(data):
+    # Minimal SHA-256 implementation for strings (UTF-8)
+    import struct
+    def rightrotate(x, n):
+        return ((x >> n) | (x << (32 - n))) & 0xffffffff
+
+    k = [
+        0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
+        0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,
+        0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,
+        0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,
+        0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,
+        0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,
+        0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,
+        0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2
+    ]
+
+    h = [
+        0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,
+        0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19
+    ]
+
+    b = bytearray(data, 'utf-8')
+    origlen = (8 * len(b)) & 0xffffffffffffffff
+    b.append(0x80)
+    while (len(b) * 8) % 512 != 448:
+        b.append(0)
+    b += origlen.to_bytes(8, 'big')
+
+    import struct
+    for i in range(0, len(b), 64):
+        w = list(struct.unpack('>16L', b[i:i+64]))
+        for j in range(16, 64):
+            s0 = (rightrotate(w[j-15], 7) ^ rightrotate(w[j-15], 18) ^ (w[j-15] >> 3)) & 0xffffffff
+            s1 = (rightrotate(w[j-2], 17) ^ rightrotate(w[j-2], 19) ^ (w[j-2] >> 10)) & 0xffffffff
+            w.append((w[j-16] + s0 + w[j-7] + s1) & 0xffffffff)
+
+        a,bc,c,d,e,f,g,hh = h
+        a0,a1,a2,a3,a4,a5,a6,a7 = a,bc,c,d,e,f,g,hh
+        for j in range(64):
+            S1 = (rightrotate(e,6) ^ rightrotate(e,11) ^ rightrotate(e,25)) & 0xffffffff
+            ch = ((e & f) ^ ((~e) & g)) & 0xffffffff
+            temp1 = (a7 + S1 + ch + k[j] + w[j]) & 0xffffffff
+            S0 = (rightrotate(a,2) ^ rightrotate(a,13) ^ rightrotate(a,22)) & 0xffffffff
+            maj = ((a & bc) ^ (a & c) ^ (bc & c)) & 0xffffffff
+            temp2 = (S0 + maj) & 0xffffffff
+
+            a7 = a6
+            a6 = a5
+            a5 = a4
+            a4 = (a3 + temp1) & 0xffffffff
+            a3 = a2
+            a2 = bc
+            bc = a
+            a = (temp1 + temp2) & 0xffffffff
+
+        h = [ (h[i] + val) & 0xffffffff for i,val in enumerate([a,bc,c,d,a4,a5,a6,a7]) ]
+
+    return ''.join(f"{x:08x}" for x in h)
+
+# -------------------------
+# Manual SHA-1 (for websocket accept)
+# -------------------------
+def sha1(data_bytes):
+    # Returns 20-byte digest as bytes
+    def leftrotate(x, n):
+        return ((x << n) | (x >> (32 - n))) & 0xffffffff
+
+    msg = bytearray(data_bytes)
+    ml = (8 * len(msg)) & 0xffffffffffffffff
+    msg.append(0x80)
+    while (len(msg) * 8) % 512 != 448:
+        msg.append(0)
+    msg += ml.to_bytes(8, 'big')
+
+    h0 = 0x67452301
+    h1 = 0xEFCDAB89
+    h2 = 0x98BADCFE
+    h3 = 0x10325476
+    h4 = 0xC3D2E1F0
+
+    import struct
+    for i in range(0, len(msg), 64):
+        w = list(struct.unpack('>16I', msg[i:i+64]))
+        for t in range(16,80):
+            val = w[t-3] ^ w[t-8] ^ w[t-14] ^ w[t-16]
+            w.append(leftrotate(val,1))
+        a,b,c,d,e = h0,h1,h2,h3,h4
+        for t in range(80):
+            if t < 20:
+                f = (b & c) | ((~b) & d)
+                k = 0x5A827999
+            elif t < 40:
+                f = b ^ c ^ d
+                k = 0x6ED9EBA1
+            elif t < 60:
+                f = (b & c) | (b & d) | (c & d)
+                k = 0x8F1BBCDC
+            else:
+                f = b ^ c ^ d
+                k = 0xCA62C1D6
+            temp = (leftrotate(a,5) + f + e + k + w[t]) & 0xffffffff
+            e = d
+            d = c
+            c = leftrotate(b,30)
+            b = a
+            a = temp
+        h0 = (h0 + a) & 0xffffffff
+        h1 = (h1 + b) & 0xffffffff
+        h2 = (h2 + c) & 0xffffffff
+        h3 = (h3 + d) & 0xffffffff
+        h4 = (h4 + e) & 0xffffffff
+
+    digest = b''.join(x.to_bytes(4, 'big') for x in [h0,h1,h2,h3,h4])
+    return digest
+
+# -------------------------
+# Manual Base64 encode (no builtin)
+# -------------------------
+_B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+def b64encode_no_lib(b: bytes) -> str:
+    out = []
+    i = 0
+    while i < len(b):
+        chunk = b[i:i+3]
+        i += 3
+        # pad chunk to 3 bytes
+        while len(chunk) < 3:
+            chunk += b'\x00'
+        n = (chunk[0] << 16) + (chunk[1] << 8) + chunk[2]
+        out.append(_B64[(n >> 18) & 0x3F])
+        out.append(_B64[(n >> 12) & 0x3F])
+        out.append(_B64[(n >> 6) & 0x3F])
+        out.append(_B64[n & 0x3F])
+    # handle padding
+    pad = (3 - (len(b) % 3)) % 3
+    if pad:
+        out[-pad:] = "=" * pad
+    return ''.join(out)
+
+# -------------------------
+# WebSocket framing helpers
+# -------------------------
+def build_ws_frame(message_text):
+    payload = message_text.encode('utf-8')
+    length = len(payload)
+    header = bytearray()
+    header.append(0x81)  # FIN + text opcode
+    if length <= 125:
+        header.append(length)
+    elif length <= 65535:
+        header.append(126)
+        header += length.to_bytes(2, 'big')
+    else:
+        header.append(127)
+        header += length.to_bytes(8, 'big')
+    return bytes(header) + payload
+
+def recv_ws_frame(client_sock):
+    # Read first 2 bytes
+    first2 = client_sock.recv(2)
+    if not first2 or len(first2) < 2:
+        return None
+    b1, b2 = first2[0], first2[1]
+    fin = (b1 >> 7) & 1
+    opcode = b1 & 0x0f
+    masked = (b2 >> 7) & 1
+    payload_len = b2 & 0x7f
+    if payload_len == 126:
+        ext = client_sock.recv(2)
+        payload_len = int.from_bytes(ext, 'big')
+    elif payload_len == 127:
+        ext = client_sock.recv(8)
+        payload_len = int.from_bytes(ext, 'big')
+    mask = b''
+    if masked:
+        mask = client_sock.recv(4)
+    payload = b''
+    while len(payload) < payload_len:
+        more = client_sock.recv(payload_len - len(payload))
+        if not more:
+            break
+        payload += more
+    if masked and mask:
+        unmasked = bytearray(payload_len)
+        for i in range(payload_len):
+            unmasked[i] = payload[i] ^ mask[i % 4]
+        payload = bytes(unmasked)
+    try:
+        return payload.decode('utf-8')
+    except:
+        return None
+
+# -------------------------
+# Simple in-memory users and rooms
+# -------------------------
+users = {}  # username -> { "password": sha256, "role": str }
+clients = {}  # socket -> {"username":..., "room":...}
+rooms = {}  # room_name -> set of sockets
+
+# -------------------------
+# Serve index.html and upgrade websocket
+# -------------------------
+INDEX_HTML = """<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>WS Chat (no-lib)</title></head>
+<body>
+<h2>Real-Time Chat Demo (no external libs)</h2>
+<div>
+  <label>Username: <input id="u"></label>
+  <label>Password: <input id="p" type="password"></label>
+  <button id="reg">Register</button>
+  <button id="login">Login</button>
+</div>
+<div id="after" style="display:none;">
+  Logged in as <span id="me"></span> |
+  <label>Room: <input id="room" value="main"></label>
+  <button id="join">Join Room</button>
+  <button id="leave">Leave</button>
+  <button id="logout">Logout</button>
+  <div style="margin-top:10px;">
+    <textarea id="log" rows="15" cols="80" readonly></textarea><br>
+    <input id="msg" size="60"><button id="send">Send</button>
+  </div>
+</div>
+
+<script>
+let ws;
+let me = null;
+function append(s){ document.getElementById('log').value += s + "\\n"; document.getElementById('log').scrollTop = document.getElementById('log').scrollHeight; }
+
+function connectWS(){
+  ws = new WebSocket("ws://" + location.host + "/ws");
+  ws.onopen = ()=>{ append("Connected to server"); };
+  ws.onmessage = (ev)=> {
+    try {
+      const obj = JSON.parse(ev.data);
+      if(obj.type === "system") append("[SYS] " + obj.msg);
+      else if(obj.type === "chat") append("["+ obj.room + "] "+ obj.from + ": " + obj.msg);
+      else if(obj.type === "private") append("[PM] " + obj.from + " -> you: " + obj.msg);
+    } catch(e) { append("RAW: " + ev.data); }
+  };
+  ws.onclose = ()=>{ append("Disconnected"); setTimeout(connectWS, 1000); };
+}
+connectWS();
+
+document.getElementById('reg').onclick = ()=>{
+  const u=document.getElementById('u').value, p=document.getElementById('p').value;
+  ws.send(JSON.stringify({type:'register', username:u, password:p}));
+};
+document.getElementById('login').onclick = ()=>{
+  const u=document.getElementById('u').value, p=document.getElementById('p').value;
+  ws.send(JSON.stringify({type:'login', username:u, password:p}));
+};
+document.getElementById('join').onclick = ()=>{
+  const r=document.getElementById('room').value;
+  ws.send(JSON.stringify({type:'join', room:r}));
+};
+document.getElementById('leave').onclick = ()=>{
+  const r=document.getElementById('room').value;
+  ws.send(JSON.stringify({type:'leave', room:r}));
+};
+document.getElementById('send').onclick = ()=>{
+  const m=document.getElementById('msg').value, r=document.getElementById('room').value;
+  ws.send(JSON.stringify({type:'message', room:r, msg:m}));
+  document.getElementById('msg').value='';
+};
+document.getElementById('logout').onclick = ()=>{
+  ws.send(JSON.stringify({type:'logout'}));
+};
+ws && (ws.onmessage = (ev)=> {
+  try {
+    const obj = JSON.parse(ev.data);
+    if(obj.type === "login_success"){
+      me = obj.username;
+      document.getElementById('after').style.display='block';
+      document.getElementById('me').innerText = me;
+    } else if(obj.type === "system") append("[SYS] " + obj.msg);
+    else if(obj.type === "chat") append("["+ obj.room + "] "+ obj.from + ": " + obj.msg);
+    else append("RAW: " + ev.data);
+  } catch(e){ append("ERR parse: " + ev.data); }
+});
+</script>
+</body>
+</html>
+"""
+
+# -------------------------
+# Broadcast helpers
+# -------------------------
+def broadcast_room(room, payload, exclude_sock=None):
+    if room not in rooms:
+        return
+    frame = build_ws_frame(payload)
+    for sock in list(rooms[room]):
+        if sock is exclude_sock:
+            continue
+        try:
+            sock.sendall(frame)
+        except:
+            safe_remove_client(sock)
+
+def send_system(sock, msg):
+    sock.sendall(build_ws_frame(json.dumps({"type":"system","msg":msg})))
+
+def safe_remove_client(sock):
+    try:
+        info = clients.get(sock)
+        if info:
+            room = info.get("room")
+            username = info.get("username")
+            if room and sock in rooms.get(room, set()):
+                rooms[room].remove(sock)
+                broadcast_room(room, json.dumps({"type":"system","msg":f"{username} left the room."}), exclude_sock=sock)
+            clients.pop(sock, None)
+        sock.close()
+    except:
+        pass
+
+# -------------------------
+# Client handler: after handshake
+# -------------------------
+def handle_ws_client(sock, addr, resource):
+    # register socket
+    clients[sock] = {"username": None, "room": None}
+    try:
+        send_system(sock, "Welcome! Please register or login.")
+        while True:
+            text = recv_ws_frame(sock)
+            if text is None:
+                break
+            try:
+                obj = json.loads(text)
+            except:
+                continue
+            t = obj.get("type")
+            if t == "register":
+                u = obj.get("username","").strip()
+                p = obj.get("password","")
+                if not u or not p:
+                    send_system(sock, "Missing username/password for register.")
+                    continue
+                if u in users:
+                    send_system(sock, "Username exists.")
+                else:
+                    users[u] = {"password": sha256(p), "role":"user"}
+                    send_system(sock, "Registered. Now login.")
+            elif t == "login":
+                u = obj.get("username","").strip()
+                p = obj.get("password","")
+                if u in users and users[u]["password"] == sha256(p):
+                    clients[sock]["username"] = u
+                    send_system(sock, "Login success.")
+                    sock.sendall(build_ws_frame(json.dumps({"type":"login_success","username":u})))
+                else:
+                    send_system(sock, "Invalid credentials.")
+            elif t == "join":
+                room = obj.get("room","main")
+                prev = clients[sock].get("room")
+                if prev:
+                    if sock in rooms.get(prev,set()):
+                        rooms[prev].remove(sock)
+                        broadcast_room(prev, json.dumps({"type":"system","msg":f"{clients[sock]['username']} left the room."}), exclude_sock=sock)
+                rooms.setdefault(room, set()).add(sock)
+                clients[sock]["room"] = room
+                broadcast_room(room, json.dumps({"type":"system","msg":f"{clients[sock]['username']} joined the room."}), exclude_sock=sock)
+                send_system(sock, f"Joined room {room}.")
+            elif t == "leave":
+                room = obj.get("room")
+                if room and sock in rooms.get(room,set()):
+                    rooms[room].remove(sock)
+                    clients[sock]["room"] = None
+                    broadcast_room(room, json.dumps({"type":"system","msg":f"{clients[sock]['username']} left the room."}), exclude_sock=sock)
+            elif t == "message":
+                room = obj.get("room")
+                msg = obj.get("msg","")
+                username = clients[sock].get("username","<anon>")
+                payload = json.dumps({"type":"chat","room":room,"from":username,"msg":msg})
+                broadcast_room(room, payload)
+            elif t == "logout":
+                send_system(sock, "Logged out.")
+                clients[sock]["username"] = None
+            else:
+                send_system(sock, f"Unknown command: {t}")
+    except Exception:
+        traceback.print_exc()
+    finally:
+        safe_remove_client(sock)
+
+# -------------------------
+# Accept and perform WebSocket handshake and then call handler
+# -------------------------
+def handle_connection(conn, addr):
+    try:
+        data = conn.recv(4096).decode('utf-8', errors='ignore')
+        if not data:
+            conn.close()
+            return
+        # Very minimal HTTP parse
+        lines = data.split("\r\n")
+        first = lines[0]
+        if first.startswith("GET "):
+            # serve index or upgrade to ws
+            # parse headers
+            headers = {}
+            for line in lines[1:]:
+                if not line:
+                    break
+                parts = line.split(":",1)
+                if len(parts)==2:
+                    headers[parts[0].strip().lower()] = parts[1].strip()
+            if headers.get('upgrade','').lower() == 'websocket':
+                key = headers.get('sec-websocket-key','')
+                GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+                accept = b64encode_no_lib(sha1((key + GUID).encode('utf-8')))
+                response = ("HTTP/1.1 101 Switching Protocols\r\n"
+                            "Upgrade: websocket\r\n"
+                            "Connection: Upgrade\r\n"
+                            "Sec-WebSocket-Accept: " + accept + "\r\n\r\n")
+                conn.sendall(response.encode('utf-8'))
+                # pass to ws handler
+                handle_ws_client(conn, addr, "/ws")
+                return
+            else:
+                # serve index html
+                if first.split(" ")[1] in ["/", "/index.html"]:
+                    body = INDEX_HTML
+                    resp = "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: " + str(len(body.encode('utf-8'))) + "\r\n\r\n" + body
+                    conn.sendall(resp.encode('utf-8'))
+                    conn.close()
+                    return
+                else:
+                    # not found
+                    body = "Not found"
+                    resp = "HTTP/1.1 404 Not Found\r\nContent-Length: " + str(len(body)) + "\r\n\r\n" + body
+                    conn.sendall(resp.encode('utf-8'))
+                    conn.close()
+                    return
+        else:
+            conn.close()
+            return
+    except Exception:
+        traceback.print_exc()
+        try: conn.close()
+        except: pass
+
+# -------------------------
+# Run server
+# -------------------------
+def serve(host='0.0.0.0', port=8765):
+    print("Starting server on", host, port)
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    s.bind((host, port))
+    s.listen(100)
+    try:
+        while True:
+            conn, addr = s.accept()
+            threading.Thread(target=handle_connection, args=(conn, addr), daemon=True).start()
+    except KeyboardInterrupt:
+        print("Stopping server.")
+    finally:
+        s.close()
+
+if __name__ == "__main__":
+    serve()
